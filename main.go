@@ -16,6 +16,8 @@ import (
 var (
 	broadcasterMap = make(map[string]chan AudioChunk)
 	broadcasterMux sync.Mutex
+	bufferMap      = make(map[string]*RingBuffer)
+	bufferMux      sync.Mutex
 )
 
 type Channel struct {
@@ -49,7 +51,6 @@ func main() {
 		go broadcastAudio(dataDir, channel)
 	}
 
-	// Serve the static HTML client.
 	http.Handle("/", http.FileServer(http.Dir(".")))
 	http.HandleFunc("/{channelID}/stream", streamHandler)
 
@@ -89,6 +90,27 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bufferMux.Lock()
+	audioBuffer, ok := bufferMap[channelID]
+	bufferMux.Unlock()
+	if !ok {
+		http.Error(w, "Channel not found.", http.StatusNotFound)
+		return
+	}
+
+	// Send the data from the ring buffer first to fill the client's buffer
+	initialChunks := audioBuffer.ReadAll()
+	for _, chunk := range initialChunks {
+		if _, err := w.Write(chunk); err != nil {
+			log.Printf("Failed to write to client on channel %s: %v", channelID, err)
+			return
+		}
+	}
+
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
 	// set http headers
 	w.Header().Set("Connection", "Keep-Alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -96,12 +118,10 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Transfer-Encoding", "chunked")
 	w.Header().Set("Content-Type", "audio/mpeg")
 
-	// write channel data to response
-	// Loop and read chunks from the broadcaster's channel
 	for chunk := range broadcastChan {
 		if _, err := w.Write(chunk.Data); err != nil {
 			log.Printf("Failed to write to client on channel %s: %v", channelID, err)
-			return // Exit on write error
+			return
 		}
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
@@ -109,9 +129,6 @@ func streamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// should read files in order from a folder and stream them in order
-// read audio file chunks from disk
-// broadcast chunks to all client connections
 func broadcastAudio(dataDir string, channel Channel) {
 	entries, err := os.ReadDir(fmt.Sprintf("%s/%s", dataDir, channel.Name))
 	if err != nil {
@@ -125,6 +142,11 @@ func broadcastAudio(dataDir string, channel Channel) {
 			audioSources = append(audioSources, AudioSource{ID: uuid.NewString(), Name: entry.Name()})
 		}
 	}
+
+	bufferMux.Lock()
+	audioBuffer := NewRingBuffer(28) // e.g., 6 seconds of audio at 192kbps
+	bufferMap[channel.Name] = audioBuffer
+	bufferMux.Unlock()
 
 	broadcasterMux.Lock()
 	broadcastChan := make(chan AudioChunk)
@@ -140,13 +162,12 @@ func broadcastAudio(dataDir string, channel Channel) {
 
 	fmt.Printf("streaming file: %s\n", fmt.Sprintf("%s/%s/%s", dataDir, channel.Name, audioSources[0].Name))
 
-	buffer := make([]byte, chunkSize)
-	ticker := time.NewTicker(170 * time.Millisecond) // Adjust for desired stream rate
+	readBuffer := make([]byte, chunkSize)
+	ticker := time.NewTicker(170 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Use a for range loop to iterate over the ticker channel
 	for range ticker.C {
-		n, err := file.Read(buffer)
+		n, err := file.Read(readBuffer)
 		if err == io.EOF {
 			log.Println("End of file reached. Looping back to the beginning.")
 			// TODO: load different file here
@@ -157,13 +178,55 @@ func broadcastAudio(dataDir string, channel Channel) {
 			log.Fatalf("Error reading audio file: %v", err)
 		}
 
-		// Create an AudioChunk with the read data
-		chunk := AudioChunk{Data: buffer[:n]}
+		chunkData := make([]byte, n)
+		copy(chunkData, readBuffer[:n])
+
+		audioBuffer.Write(chunkData)
+
+		chunk := AudioChunk{Data: chunkData}
 
 		select {
 		case broadcastChan <- chunk:
 		default:
-			// log.Print("Broadcast channel is blocked, dropping chunk")
 		}
 	}
+}
+
+type RingBuffer struct {
+	data  [][]byte
+	head  int
+	size  int
+	mutex sync.Mutex
+}
+
+func NewRingBuffer(size int) *RingBuffer {
+	return &RingBuffer{
+		data: make([][]byte, size),
+		size: size,
+	}
+}
+
+func (b *RingBuffer) Write(chunk []byte) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	b.data[b.head] = chunk
+	b.head = (b.head + 1) % b.size
+}
+
+func (b *RingBuffer) ReadAll() [][]byte {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	result := make([][]byte, 0, b.size)
+	for i := b.head; i < b.size; i++ {
+		if b.data[i] != nil {
+			result = append(result, b.data[i])
+		}
+	}
+	for i := 0; i < b.head; i++ {
+		if b.data[i] != nil {
+			result = append(result, b.data[i])
+		}
+	}
+	return result
 }
