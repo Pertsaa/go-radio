@@ -1,9 +1,8 @@
-BINARY_NAME=go-radio
+API_BINARY_NAME=api
+APP_BINARY_NAME=app
 
-run:
-	bin/$(BINARY_NAME)
+api:
+	air --build.cmd "go build -o bin/$(API_BINARY_NAME) cmd/$(API_BINARY_NAME)/main.go" --build.bin "./bin/$(API_BINARY_NAME)" data
 
-build:
-	rm -rf ./bin/$(BINARY_NAME) ./static/index.css
-	./tailwindcss -i static/base.css -o static/index.css --minify
-	go build -o bin/$(BINARY_NAME) .
+app:
+	air --build.cmd "./tailwindcss -i internal/static/base.css -o internal/static/index.css --minify && go build -o bin/$(APP_BINARY_NAME) cmd/$(APP_BINARY_NAME)/main.go" --build.bin "./bin/$(APP_BINARY_NAME)"

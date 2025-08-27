@@ -7,22 +7,38 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/Pertsaa/go-radio/radio"
+	"github.com/Pertsaa/go-radio/internal/radio"
 )
 
-type Handler struct {
+type APIHandler struct {
 	ctx   context.Context
 	radio *radio.Radio
 }
 
-func NewHandler(ctx context.Context, radio *radio.Radio) *Handler {
-	return &Handler{
+func NewAPIHandler(ctx context.Context, radio *radio.Radio) *APIHandler {
+	return &APIHandler{
 		ctx:   ctx,
 		radio: radio,
 	}
 }
 
-func (h *Handler) NotFoundHandler(w http.ResponseWriter, r *http.Request) error {
+type AppHandler struct {
+	ctx context.Context
+}
+
+func NewAppHandler(ctx context.Context) *AppHandler {
+	return &AppHandler{
+		ctx: ctx,
+	}
+}
+
+func (h *APIHandler) NotFoundHandler(w http.ResponseWriter, r *http.Request) error {
+	w.WriteHeader(http.StatusNotFound)
+	fmt.Fprint(w, "Not Found")
+	return nil
+}
+
+func (h *AppHandler) NotFoundHandler(w http.ResponseWriter, r *http.Request) error {
 	w.WriteHeader(http.StatusNotFound)
 	fmt.Fprint(w, "Not Found")
 	return nil

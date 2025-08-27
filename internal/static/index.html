@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Go Radio</title>
+
+    <link rel="icon" href="favicon.png" />
+    <link rel="stylesheet" href="index.css" />
+
+    <script
+      src="https://cdn.jsdelivr.net/npm/@tailwindplus/elements@1"
+      type="module"
+    ></script>
+  </head>
+
+  <body class="text-sm bg-neutral-950 text-slate-50 select-none">
+    <main class="flex flex-col">
+      <div
+        class="fixed flex items-center justify-between h-[64px] overflow-hidden gap-2 px-6 top-0 left-0 right-0 bg-neutral-950 border-b border-neutral-800"
+      >
+        <div class="flex gap-2 items-center whitespace-nowrap">
+          <img src="favicon.png" width="64" height="32" />
+          <h1 class="font-semibold text-base leading-16">Go Radio</h1>
+        </div>
+      </div>
+
+      <div class="mt-[64px] p-12">
+        <ul id="channel-list" class="flex flex-col gap-2"></ul>
+      </div>
+
+      <audio id="audio-player" preload="auto">
+        Your browser does not support the audio element.
+      </audio>
+    </main>
+  </body>
+
+  <template id="channel-list-item">
+    <li>
+      <button
+        class="cursor-pointer data-active:border-green-500 data-active:bg-green-950/10 data-active:text-green-500 p-6 text-left rounded border border-neutral-800 bg-neutral-950 hover:bg-neutral-900 transition-all"
+      ></button>
+    </li>
+  </template>
+</html>
+
+<script>
+  let activeChannelId;
+
+  const channelList = document.getElementById("channel-list");
+  const channelListItem = document.getElementById("channel-list-item");
+  const audioPlayer = document.getElementById("audio-player");
+
+  function handlePlayChannel(channelId) {
+    if (activeChannelId === channelId) {
+      return;
+    }
+
+    audioPlayer.pause();
+    audioPlayer.src = "";
+
+    const url = `http://localhost:8080/radio/channels/${channelId}/stream`;
+    audioPlayer.src = url;
+
+    audioPlayer.load();
+    audioPlayer
+      .play()
+      .then(() => console.log(`playing channel: ${channelId}`))
+      .catch((error) => console.error("Playback error:", error));
+
+    document
+      .querySelectorAll("button")
+      .forEach((b) => b.removeAttribute("data-active"));
+    document.getElementById(channelId).setAttribute("data-active", true);
+
+    activeChannelId = channelId;
+  }
+
+  async function init() {
+    const response = await fetch("http://localhost:8080/radio/channels");
+    const channels = await response.json();
+
+    for (const channel of channels) {
+      const node = channelListItem.content.cloneNode(true);
+      const button = node.querySelectorAll("button")[0];
+      button.id = channel.id;
+      button.textContent = channel.name;
+      button.addEventListener("click", () => handlePlayChannel(channel.id));
+      channelList.appendChild(button);
+    }
+  }
+
+  init();
+</script>

@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/Pertsaa/go-radio/handler"
-	"github.com/Pertsaa/go-radio/middleware"
-	"github.com/Pertsaa/go-radio/radio"
+	"github.com/Pertsaa/go-radio/internal/handler"
+	"github.com/Pertsaa/go-radio/internal/middleware"
+	"github.com/Pertsaa/go-radio/internal/radio"
 )
 
 func main() {
@@ -33,14 +33,10 @@ func main() {
 
 	r := http.NewServeMux()
 
-	h := handler.NewHandler(ctx, goRadio)
+	h := handler.NewAPIHandler(ctx, goRadio)
 
-	r.HandleFunc("GET /", handler.Make(h.IndexHandler))
-	r.HandleFunc("GET /index.css", handler.Make(h.CSSHandler))
-	r.HandleFunc("GET /favicon.png", handler.Make(h.FaviconHandler))
-
-	r.HandleFunc("GET /api/radio/channels", handler.Make(h.RadioChannelListHandler))
-	r.HandleFunc("GET /api/radio/{channelID}/stream", handler.Make(h.RadioChannelStreamHandler))
+	r.HandleFunc("GET /radio/channels", handler.Make(h.RadioChannelListHandler))
+	r.HandleFunc("GET /radio/channels/{channelID}/stream", handler.Make(h.RadioChannelStreamHandler))
 
 	stack := middleware.CreateStack(
 		middleware.Log,
