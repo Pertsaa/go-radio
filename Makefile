@@ -6,3 +6,6 @@ api:
 
 app:
 	air --build.cmd "./tailwindcss -i internal/static/base.css -o internal/static/index.css --minify && go build -o bin/$(APP_BINARY_NAME) cmd/$(APP_BINARY_NAME)/main.go" --build.bin "./bin/$(APP_BINARY_NAME)"
+
+formatter:
+	go build -o bin/formatter cmd/formatter/main.go
