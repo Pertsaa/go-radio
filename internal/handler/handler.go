@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	"github.com/Pertsaa/go-radio/internal/radio"
@@ -67,14 +66,7 @@ func Make(h APIFunc) http.HandlerFunc {
 		if err := h(w, r); err != nil {
 			if apiErr, ok := err.(APIError); ok {
 				writeJSON(w, apiErr.Code, apiErr)
-			} else {
-				internalErr := map[string]any{
-					"code":    http.StatusInternalServerError,
-					"message": "internal server error",
-				}
-				writeJSON(w, http.StatusInternalServerError, internalErr)
 			}
-			slog.Error("handler error", "err", err.Error(), "path", r.URL.Path)
 		}
 	}
 }
@@ -84,13 +76,3 @@ func writeJSON(w http.ResponseWriter, code int, data any) error {
 	w.WriteHeader(code)
 	return json.NewEncoder(w).Encode(data)
 }
-
-// func parseBody[T any](r *http.Request) (T, error) {
-// 	var body T
-// 	err := json.NewDecoder(r.Body).Decode(&body)
-// 	if err != nil {
-// 		return body, err
-// 	}
-// 	defer r.Body.Close()
-// 	return body, nil
-// }

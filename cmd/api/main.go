@@ -39,7 +39,6 @@ func main() {
 	r.HandleFunc("GET /radio/channels/{channelID}/stream", handler.Make(h.RadioChannelStreamHandler))
 
 	stack := middleware.CreateStack(
-		middleware.Log,
 		middleware.CORS,
 	)
 
