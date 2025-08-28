@@ -22,8 +22,9 @@
       </div>
     </div>
 
-    <div class="mt-[64px] p-12">
-      <ul id="channel-list" class="flex flex-col gap-2"></ul>
+    <div class="mt-[64px] p-6 sm:p-12">
+      <ul id="channel-list" class="grid grid-cols-1 sm:grid-cols-2 gap-2 gap-x-4 mx-auto max-w-[min(1200px,100vw)]">
+      </ul>
     </div>
 
     <audio id="audio-player" preload="auto">
@@ -78,7 +79,7 @@
     audioPlayer.pause();
     audioPlayer.src = "";
 
-    const url = `http://localhost:8080/radio/channels/${channelId}/stream`;
+    const url = `//${window.location.hostname}:8080/radio/channels/${channelId}/stream`;
     audioPlayer.src = url;
 
     audioPlayer.load();
@@ -105,7 +106,7 @@
   }
 
   async function init() {
-    const response = await fetch("http://localhost:8080/radio/channels");
+    const response = await fetch(`//${window.location.hostname}:8080/radio/channels`);
     const channels = await response.json();
 
     for (const channel of channels) {
