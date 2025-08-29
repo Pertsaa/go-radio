@@ -21,10 +21,11 @@ import (
 )
 
 var (
-	token       string
-	activeVCs   = make(map[string]*discordgo.VoiceConnection)
-	ffmpegProcs = make(map[string]context.CancelFunc)
-	mu          sync.Mutex
+	token    string
+	vcs      = make(map[string]*discordgo.VoiceConnection)
+	vcMu     sync.Mutex
+	ffmpegs  = make(map[string]context.CancelFunc)
+	ffmpegMu sync.Mutex
 )
 
 var commands = []*discordgo.ApplicationCommand{
@@ -196,19 +197,25 @@ func startStreamingInteraction(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	mu.Lock()
-	ffmpegProcs[guildID] = cancel
-	activeVCs[guildID] = vc
-	mu.Unlock()
+	ffmpegMu.Lock()
+	ffmpegs[guildID] = cancel
+	ffmpegMu.Unlock()
+
+	vcMu.Lock()
+	vcs[guildID] = vc
+	vcMu.Unlock()
 
 	go func() {
 		if err := streamChannel(ctx, guildID, radioBaseURL, channelID); err != nil {
 			log.Println("Stream error:", err)
 		}
-		mu.Lock()
-		delete(activeVCs, guildID)
-		delete(ffmpegProcs, guildID)
-		mu.Unlock()
+		ffmpegMu.Lock()
+		delete(ffmpegs, guildID)
+		ffmpegMu.Unlock()
+
+		vcMu.Lock()
+		delete(vcs, guildID)
+		vcMu.Unlock()
 	}()
 
 	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
@@ -218,26 +225,26 @@ func startStreamingInteraction(s *discordgo.Session, i *discordgo.InteractionCre
 }
 
 func stopStreaming(guildID string) {
-	mu.Lock()
-	if cancel, ok := ffmpegProcs[guildID]; ok {
+	ffmpegMu.Lock()
+	if cancel, ok := ffmpegs[guildID]; ok {
 		cancel()
-		delete(ffmpegProcs, guildID)
+		delete(ffmpegs, guildID)
 	}
-	if vc, ok := activeVCs[guildID]; ok {
+	ffmpegMu.Unlock()
+
+	vcMu.Lock()
+	defer vcMu.Unlock()
+	if vc, ok := vcs[guildID]; ok {
 		vc.Disconnect()
-		delete(activeVCs, guildID)
+		delete(vcs, guildID)
 	}
-	mu.Unlock()
 }
 
 func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 	fmt.Println("voice state update")
 
-	mu.Lock()
-	defer mu.Unlock()
-
 	guildID := vs.GuildID
-	vc, ok := activeVCs[guildID]
+	vc, ok := vcs[guildID]
 	if !ok {
 		return
 	}
@@ -253,8 +260,6 @@ func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 			userCount++
 		}
 	}
-
-	fmt.Printf("user count %d\n", userCount)
 
 	if userCount == 0 {
 		stopStreaming(guildID)
@@ -275,7 +280,7 @@ func guildCreate(s *discordgo.Session, event *discordgo.GuildCreate) {
 }
 
 func streamChannel(ctx context.Context, guildID, radioBaseURL, radioChannelID string) error {
-	vc := activeVCs[guildID]
+	vc := vcs[guildID]
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
@@ -369,14 +374,19 @@ func fetchChannels(baseURL string) ([]Channel, error) {
 }
 
 func cleanup() {
-	mu.Lock()
-	defer mu.Unlock()
-	for _, cancel := range ffmpegProcs {
+	for _, cancel := range ffmpegs {
 		cancel()
 	}
-	for _, vc := range activeVCs {
+
+	for _, vc := range vcs {
 		vc.Disconnect()
 	}
-	ffmpegProcs = make(map[string]context.CancelFunc)
-	activeVCs = make(map[string]*discordgo.VoiceConnection)
+
+	ffmpegMu.Lock()
+	ffmpegs = make(map[string]context.CancelFunc)
+	ffmpegMu.Unlock()
+
+	vcMu.Lock()
+	vcs = make(map[string]*discordgo.VoiceConnection)
+	vcMu.Unlock()
 }
