@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	token    string
-	vcs      = make(map[string]*discordgo.VoiceConnection)
-	vcMu     sync.Mutex
-	ffmpegs  = make(map[string]context.CancelFunc)
-	ffmpegMu sync.Mutex
+	radioBaseURL = "http://localhost:8080"
+	token        string
+	vcs          = make(map[string]*discordgo.VoiceConnection)
+	vcMu         sync.Mutex
+	ffmpegs      = make(map[string]context.CancelFunc)
+	ffmpegMu     sync.Mutex
 )
 
 var commands = []*discordgo.ApplicationCommand{
@@ -67,6 +68,7 @@ func main() {
 	dg.AddHandler(interactionCreate)
 	dg.AddHandler(guildCreate)
 	dg.AddHandler(voiceStateUpdate)
+
 	dg.Identify.Intents = discordgo.IntentsGuilds | discordgo.IntentsGuildVoiceStates
 
 	if err := dg.Open(); err != nil {
@@ -95,154 +97,117 @@ func ready(s *discordgo.Session, event *discordgo.Ready) {
 }
 
 func interactionCreate(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	guildID := i.GuildID
-	radioBaseURL := "http://localhost:8080"
+	cmd := i.ApplicationCommandData().Name
 
-	switch i.ApplicationCommandData().Name {
-	case "radio":
-		channels, err := fetchChannels(radioBaseURL)
-		if err != nil || len(channels) == 0 {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{Content: "No radio channels available"},
-			})
-			return
-		}
-		startStreamingInteraction(s, i, guildID, radioBaseURL, channels[0].ID, channels[0].Name)
-
-	case "stop":
-		stopStreaming(guildID)
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "Stopped streaming."},
-		})
-
-	case "channels":
-		channels, err := fetchChannels(radioBaseURL)
-		if err != nil || len(channels) == 0 {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{Content: "No radio channels available."},
-			})
-			return
-		}
-		var names []string
-		for _, ch := range channels {
-			names = append(names, ch.Name)
-		}
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "Available channels: " + strings.Join(names, ", ")},
-		})
-
-	case "channel":
-		channelName := i.ApplicationCommandData().Options[0].StringValue()
-		channels, err := fetchChannels(radioBaseURL)
-		if err != nil || len(channels) == 0 {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{Content: "No radio channels available."},
-			})
-			return
-		}
-
-		var selectedChannel *Channel
-		for _, ch := range channels {
-			if strings.EqualFold(ch.Name, channelName) {
-				selectedChannel = &ch
-				break
-			}
-		}
-		if selectedChannel == nil {
-			s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-				Type: discordgo.InteractionResponseChannelMessageWithSource,
-				Data: &discordgo.InteractionResponseData{Content: "Channel not found."},
-			})
-			return
-		}
-		startStreamingInteraction(s, i, guildID, radioBaseURL, selectedChannel.ID, selectedChannel.Name)
-	}
-}
-
-func startStreamingInteraction(s *discordgo.Session, i *discordgo.InteractionCreate, guildID, radioBaseURL, channelID, channelName string) {
-	stopStreaming(guildID)
-
-	g, err := s.State.Guild(guildID)
-	if err != nil {
+	if cmd == "radio" {
+		radioInteraction(s, i)
 		return
 	}
 
-	var userChannelID string
-	for _, vs := range g.VoiceStates {
-		if vs.UserID == i.Member.User.ID {
-			userChannelID = vs.ChannelID
+	if cmd == "channels" {
+		channelListInteraction(s, i)
+		return
+	}
+
+	if cmd == "channel" {
+		channelInteraction(s, i)
+		return
+	}
+
+	if cmd == "stop" {
+		stopInteraction(s, i)
+		return
+	}
+}
+
+// Join user vc and start streaming first radio channel
+func radioInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	channels, err := fetchChannels(radioBaseURL)
+
+	if err != nil || len(channels) == 0 {
+		respondMessage(s, i, "No radio channels available")
+		return
+	}
+
+	joinUserVoiceChannel(s, i)
+
+	go streamChannel(i.GuildID, channels[0])
+
+	respondMessage(s, i, fmt.Sprintf("Streaming %s...", channels[0].Name))
+}
+
+// Switch stream to different radio channel
+func channelInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	channelName := i.ApplicationCommandData().Options[0].StringValue()
+	channels, err := fetchChannels(radioBaseURL)
+	if err != nil || len(channels) == 0 {
+		respondMessage(s, i, "No radio channels available")
+		return
+	}
+
+	var channel Channel
+	found := false
+	for _, ch := range channels {
+		if strings.EqualFold(ch.Name, channelName) {
+			channel = ch
+			found = true
 			break
 		}
 	}
-	if userChannelID == "" {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "Join a voice channel first!"},
-		})
+
+	if !found {
+		respondMessage(s, i, "Channel not found")
 		return
 	}
 
-	vc, err := s.ChannelVoiceJoin(guildID, userChannelID, false, true)
-	if err != nil {
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{Content: "Failed to join voice channel."},
-		})
+	// get existing voice connection
+	_, ok := vcs[i.GuildID]
+	if !ok {
+		respondMessage(s, i, "Not in a voice channel. Remember to run /radio first.")
 		return
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	ffmpegMu.Lock()
-	ffmpegs[guildID] = cancel
-	ffmpegMu.Unlock()
+	go streamChannel(i.GuildID, channel)
 
-	vcMu.Lock()
-	vcs[guildID] = vc
-	vcMu.Unlock()
-
-	go func() {
-		if err := streamChannel(ctx, guildID, radioBaseURL, channelID); err != nil {
-			log.Println("Stream error:", err)
-		}
-		ffmpegMu.Lock()
-		delete(ffmpegs, guildID)
-		ffmpegMu.Unlock()
-
-		vcMu.Lock()
-		delete(vcs, guildID)
-		vcMu.Unlock()
-	}()
-
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: fmt.Sprintf("Streaming %s...", channelName)},
-	})
+	respondMessage(s, i, fmt.Sprintf("Streaming %s...", channelName))
 }
 
-func stopStreaming(guildID string) {
+// Fetch and list available radio channels
+func channelListInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	channels, err := fetchChannels(radioBaseURL)
+	if err != nil || len(channels) == 0 {
+		respondMessage(s, i, "No radio channels available.")
+		return
+	}
+
+	var names []string
+	for _, ch := range channels {
+		names = append(names, ch.Name)
+	}
+
+	respondMessage(s, i, "Available channels: "+strings.Join(names, ", "))
+}
+
+// Stop streaming and disconnect vc
+func stopInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ffmpegMu.Lock()
-	if cancel, ok := ffmpegs[guildID]; ok {
+	if cancel, ok := ffmpegs[i.GuildID]; ok {
 		cancel()
-		delete(ffmpegs, guildID)
+		delete(ffmpegs, i.GuildID)
 	}
 	ffmpegMu.Unlock()
 
 	vcMu.Lock()
 	defer vcMu.Unlock()
-	if vc, ok := vcs[guildID]; ok {
+	if vc, ok := vcs[i.GuildID]; ok {
 		vc.Disconnect()
-		delete(vcs, guildID)
+		delete(vcs, i.GuildID)
 	}
+
+	respondMessage(s, i, "Stopped streaming.")
 }
 
 func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
-	fmt.Println("voice state update")
-
 	guildID := vs.GuildID
 	vc, ok := vcs[guildID]
 	if !ok {
@@ -262,29 +227,42 @@ func voiceStateUpdate(s *discordgo.Session, vs *discordgo.VoiceStateUpdate) {
 	}
 
 	if userCount == 0 {
-		stopStreaming(guildID)
+		ffmpegMu.Lock()
+		if cancel, ok := ffmpegs[guildID]; ok {
+			cancel()
+			delete(ffmpegs, guildID)
+		}
+		ffmpegMu.Unlock()
+
+		vcMu.Lock()
+		defer vcMu.Unlock()
+		if vc, ok := vcs[guildID]; ok {
+			vc.Disconnect()
+			delete(vcs, guildID)
+		}
 		log.Println("Disconnected from empty voice channel in guild:", guildID)
 	}
 }
 
-func guildCreate(s *discordgo.Session, event *discordgo.GuildCreate) {
-	if event.Guild.Unavailable {
-		return
+func streamChannel(guildID string, channel Channel) error {
+	vc, ok := vcs[guildID]
+	if !ok {
+		return fmt.Errorf("vc not found for guild %s", guildID)
 	}
-	for _, channel := range event.Guild.Channels {
-		if channel.ID == event.Guild.ID {
-			s.ChannelMessageSend(channel.ID, "Radio is ready! Use /radio while in a voice channel to play a stream.")
-			return
-		}
-	}
-}
-
-func streamChannel(ctx context.Context, guildID, radioBaseURL, radioChannelID string) error {
-	vc := vcs[guildID]
 	vc.Speaking(true)
 	defer vc.Speaking(false)
 
-	streamURL := fmt.Sprintf("%s/radio/channels/%s/stream", radioBaseURL, radioChannelID)
+	cancel, ok := ffmpegs[guildID]
+	if ok {
+		cancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ffmpegMu.Lock()
+	ffmpegs[guildID] = cancel
+	ffmpegMu.Unlock()
+
+	streamURL := fmt.Sprintf("%s/radio/channels/%s/stream", radioBaseURL, channel.ID)
 	cmd := exec.Command("ffmpeg",
 		"-i", streamURL,
 		"-map", "0:a",
@@ -337,6 +315,9 @@ func streamChannel(ctx context.Context, guildID, radioBaseURL, radioChannelID st
 
 		select {
 		case <-ctx.Done():
+			ffmpegMu.Lock()
+			delete(ffmpegs, guildID)
+			ffmpegMu.Unlock()
 			return nil
 		default:
 		}
@@ -352,6 +333,73 @@ func streamChannel(ctx context.Context, guildID, radioBaseURL, radioChannelID st
 		}
 		vc.OpusSend <- opusFrame
 	}
+}
+
+func joinUserVoiceChannel(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	g, err := s.State.Guild(i.GuildID)
+	if err != nil {
+		return
+	}
+
+	var userChannelID string
+	for _, vs := range g.VoiceStates {
+		if vs.UserID == i.Member.User.ID {
+			userChannelID = vs.ChannelID
+			break
+		}
+	}
+
+	if userChannelID == "" {
+		respondMessage(s, i, "Join a voice channel first!")
+		return
+	}
+
+	vc, err := s.ChannelVoiceJoin(i.GuildID, userChannelID, false, true)
+	if err != nil {
+		respondMessage(s, i, "Failed to join voice channel.")
+		return
+	}
+
+	vcMu.Lock()
+	vcs[i.GuildID] = vc
+	vcMu.Unlock()
+}
+
+func respondMessage(s *discordgo.Session, i *discordgo.InteractionCreate, message string) {
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Content: message},
+	})
+}
+
+func guildCreate(s *discordgo.Session, event *discordgo.GuildCreate) {
+	if event.Guild.Unavailable {
+		return
+	}
+	for _, channel := range event.Guild.Channels {
+		if channel.ID == event.Guild.ID {
+			s.ChannelMessageSend(channel.ID, "Radio is ready! Use /radio while in a voice channel to play a stream.")
+			return
+		}
+	}
+}
+
+func cleanup() {
+	for _, cancel := range ffmpegs {
+		cancel()
+	}
+
+	for _, vc := range vcs {
+		vc.Disconnect()
+	}
+
+	ffmpegMu.Lock()
+	ffmpegs = make(map[string]context.CancelFunc)
+	ffmpegMu.Unlock()
+
+	vcMu.Lock()
+	vcs = make(map[string]*discordgo.VoiceConnection)
+	vcMu.Unlock()
 }
 
 type Channel struct {
@@ -371,22 +419,4 @@ func fetchChannels(baseURL string) ([]Channel, error) {
 		return nil, err
 	}
 	return channels, nil
-}
-
-func cleanup() {
-	for _, cancel := range ffmpegs {
-		cancel()
-	}
-
-	for _, vc := range vcs {
-		vc.Disconnect()
-	}
-
-	ffmpegMu.Lock()
-	ffmpegs = make(map[string]context.CancelFunc)
-	ffmpegMu.Unlock()
-
-	vcMu.Lock()
-	vcs = make(map[string]*discordgo.VoiceConnection)
-	vcMu.Unlock()
 }
